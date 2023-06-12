@@ -1,5 +1,5 @@
 (define (domain recharging-robots)
-(:requirements :typing :adl)
+(:requirements :typing :adl :action-costs)
 (:types
     location - object
     robot - object
@@ -8,17 +8,19 @@
 )
 
 (:predicates
+    (BATTERY-PREDECESSOR ?f1 - battery-level ?f2 - battery-level)
+    (CONNECTED ?l1 - location ?l2 - location)
+    (GUARD-CONFIG ?c - config ?l - location)
     (at ?r - robot ?l - location)
     (stopped ?r - robot)
-    (battery-predecessor ?f1 - battery-level ?f2 - battery-level)
     (battery ?r - robot ?f - battery-level)
-    (connected ?l1 - location ?l2 - location)
     (guarded ?l - location)
-    (guard-config ?c - config ?l - location)
     (config-fullfilled ?c - config)
 )
 
 (:functions
+    (move-cost) - number
+    (recharge-cost) - number
     (total-cost) - number
 )
 
@@ -30,8 +32,8 @@
             (not (stopped ?r))
             (at ?r ?from)
             (battery ?r ?fpre)
-            (battery-predecessor ?fpost ?fpre)
-            (or (connected ?from ?to) (connected ?to ?from))
+            (BATTERY-PREDECESSOR ?fpost ?fpre)
+            (or (CONNECTED ?from ?to) (CONNECTED ?to ?from))
         )
     :effect
         (and
@@ -39,7 +41,7 @@
             (at ?r ?to)
             (not (battery ?r ?fpre))
             (battery ?r ?fpost)
-            (increase (total-cost) 1)
+            (increase (total-cost) (move-cost))
         )
 )
 
@@ -54,8 +56,8 @@
             (at ?rto ?loc)
             (battery ?rfrom ?fpre-from)
             (battery ?rto ?fpre-to)
-            (battery-predecessor ?fpost-from ?fpre-from)
-            (battery-predecessor ?fpre-to ?fpost-to)
+            (BATTERY-PREDECESSOR ?fpost-from ?fpre-from)
+            (BATTERY-PREDECESSOR ?fpre-to ?fpost-to)
         )
     :effect
         (and
@@ -63,7 +65,7 @@
             (battery ?rfrom ?fpost-from)
             (not (battery ?rto ?fpre-to))
             (battery ?rto ?fpost-to)
-            (increase (total-cost) 1)
+            (increase (total-cost) (recharge-cost))
         )
 )
 
@@ -79,7 +81,7 @@
             (stopped ?r)
             (guarded ?l)
             (forall (?l2 - location)
-                (when (or (connected ?l ?l2) (connected ?l2 ?l))
+                (when (or (CONNECTED ?l ?l2) (CONNECTED ?l2 ?l))
                       (guarded ?l2)
                 )
             )
@@ -91,7 +93,7 @@
     :precondition
         (and
             (forall (?l - location)
-                (imply (guard-config ?c ?l) (guarded ?l))
+                (imply (GUARD-CONFIG ?c ?l) (guarded ?l))
             )
         )
     :effect
