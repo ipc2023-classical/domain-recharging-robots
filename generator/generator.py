@@ -5,6 +5,8 @@ import sys
 import cairo
 import random
 import math
+import copy
+import itertools
 import networkx as nx
 from scipy.spatial import Delaunay
 from shapely import geometry
@@ -17,6 +19,9 @@ MAX_SQUARE_WIDTH = 0.3
 MIN_VIEWPOINT_VIEWPOINT_DISTANCE = 0.1
 MIN_VIEWPOINT_OBSTACLE_DISTANCE = 0.05
 MIN_OBSTACLE_OBSTACLE_DISTANCE = 0.05
+
+MOVE_COST = 1
+RECHARGE_COST = 0
 
 class SquareObstacle(object):
     def __init__(self, pos, w):
@@ -205,9 +210,13 @@ class Map(object):
             g.add_edge(*e)
         return dict(nx.all_pairs_shortest_path(g))
 
-    def minCover(self, locations, num_robots = None, robot_positions = None):
+    def minCover(self, locations, robot_locations = None):
         import cplex
         prob = cplex.Cplex()
+        prob.set_log_stream(None)
+        #prob.set_error_stream(None)
+        prob.set_warning_stream(None)
+        prob.set_results_stream(None)
         prob.objective.set_sense(prob.objective.sense.minimize)
 
         all_locations = [x for x in locations]
@@ -216,10 +225,10 @@ class Map(object):
                 all_locations += e
         all_locations = sorted(list(set(all_locations)))
 
-        if robot_positions is not None:
-            num_robots = len(robot_positions)
+        if robot_locations is not None:
+            num_robots = len(robot_locations)
             distances = self.allShortestPaths()
-            for i, r in enumerate(robot_positions):
+            for i, r in enumerate(robot_locations):
                 # Robot variables
                 names = ['r{0}_{1}'.format(i, x) for x in all_locations]
                 obj = [1. * (len(distances[r][x]) - 1) for x in all_locations]
@@ -239,7 +248,7 @@ class Map(object):
                                names = names)
 
             for loc in all_locations:
-                # Each location is covered by at most one robot
+                # Each location is occupied by at most one robot
                 names = ['r{0}_{1}'.format(r, loc) for r in range(num_robots)]
                 x = [names, [1. for n in names]]
                 prob.linear_constraints.add(lin_expr = [x], senses = ['L'], rhs = [1.])
@@ -258,12 +267,12 @@ class Map(object):
                                types = ['B' for x in all_locations],
                                names = names)
 
-        if num_robots is not None:
-            # Enforce number of robots
-            names = ['x{0}'.format(x) for x in all_locations]
-            x = [names, [1. for n in names]]
-            prob.linear_constraints.add(lin_expr = [x], senses = ['E'],
-                                        rhs = [num_robots])
+#        if num_robots is not None:
+#            # Enforce number of robots
+#            names = ['x{0}'.format(x) for x in all_locations]
+#            x = [names, [1. for n in names]]
+#            prob.linear_constraints.add(lin_expr = [x], senses = ['E'],
+#                                        rhs = [num_robots])
 
         for y in locations:
             # Enforce that every location is covered from at least one
@@ -281,9 +290,16 @@ class Map(object):
 
 
         sol = {
+            # List of nodes that cover 'covered-locations'
             'cover' : [],
-            'robot-target' : [],
+            # Target location for each robot so that they cover 'covered-locatins'
+            'robot-target' : copy.deepcopy(robot_locations),
+            # Cost of moving robots from 'robot-locations' to 'robot-targets'
             'move-cost' : -1,
+            # List of node that ought to be covered
+            'covered-locations' : copy.deepcopy(locations),
+            # Initial locations of robots
+            'robot-locations' : copy.deepcopy(robot_locations),
         }
 
         for x in all_locations:
@@ -293,13 +309,13 @@ class Map(object):
                 sol['cover'] += [x]
         sol['move-cost'] = int(math.ceil(prob.solution.get_objective_value()))
 
-        if robot_positions is not None:
-            for i, rl in enumerate(robot_positions):
+        if robot_locations is not None:
+            for i, rl in enumerate(robot_locations):
                 for x in all_locations:
                     name = 'r{0}_{1}'.format(i, x)
                     xval = prob.solution.get_values([name])
                     if xval[0] > 0.5:
-                        sol['robot-target'] += [x]
+                        sol['robot-target'][i] = x
         return sol
 
     def draw(self, fn, blue = [], red = [], purple = []):
@@ -399,12 +415,14 @@ class PddlProblem(object):
 
     def createInit(self):
         s = '(:init\n'
+        s += f'  (= (move-cost) {MOVE_COST})\n'
+        s += f'  (= (recharge-cost) {RECHARGE_COST})\n'
         s += '  (= (total-cost) 0)\n'
         for f, t in self.connections:
-            s += '  (connected location-{0:04d} location-{1:04d})\n'.format(f, t)
+            s += '  (CONNECTED location-{0:04d} location-{1:04d})\n'.format(f, t)
         s += '\n'
         for i in range(self.battery):
-            s += '  (battery-predecessor battery-{0:04d} battery-{1:04d})\n' \
+            s += '  (BATTERY-PREDECESSOR battery-{0:04d} battery-{1:04d})\n' \
                     .format(i, i + 1)
         s += '\n'
         for ri in range(self.robots):
@@ -415,7 +433,7 @@ class PddlProblem(object):
         s += '\n'
         for ci, cfg in enumerate(self.guard_config):
             for loc in cfg:
-                s += '  (guard-config config-{0:02d} location-{1:04d})\n' \
+                s += '  (GUARD-CONFIG config-{0:02d} location-{1:04d})\n' \
                         .format(ci, loc)
             s += '\n'
         s += ')\n'
@@ -694,7 +712,7 @@ Generate a problem for re-charging guard robots:
 
     # Get optimal solution considering only moving and extract the minimum
     # required charge (and target locations for each robot to create a plan)
-    sol = m.minCover(dest, robot_positions = [source for x in range(target_min_cover)])
+    sol = m.minCover(dest, robot_locations = [source for x in range(target_min_cover)])
     print('Solution:', sol)
     robot_targets = sol['robot-target']
     for i in range(len(robot_targets), args.num_robots):
@@ -779,7 +797,6 @@ Generate a problem for re-charging guard robots:
 
 
 def genArea(m, min_cover, center_locations):
-    print(center_locations)
     # Randomly select center of the guarded area
     dest_center = random.choice(center_locations)
 
@@ -796,7 +813,7 @@ def genArea(m, min_cover, center_locations):
     return sorted(dest)
 
 def genAreas(m, num_areas, min_cover):
-    for _ in range(10):
+    for _ in range(100):
         center_locations = set([i for i in range(len(m.locations))])
         areas = []
         for i in range(num_areas):
@@ -815,8 +832,8 @@ def closestByDistance(m, areas, start):
     target = None
     d = 10000000000
     for i, area in enumerate(areas):
-        sol = m.minCover(area, robot_positions = start)
-        print(sol)
+        sol = m.minCover(area, robot_locations = start)
+        print('closestByDistance solution:', sol)
         if sol['move-cost'] < d:
             closest = i
             d = sol['move-cost']
@@ -834,6 +851,156 @@ def sortAreasByDistance(m, areas, start):
         del areas[closest]
     return out, target
 
+
+class Prob(object):
+    def __init__(self, m = None, init = None):
+        self.cost = 1000000
+        self.m = m
+
+        if init is not None:
+            self.cost = 0
+            self.areas = []
+            self.num_robots = len(init)
+            self.cur_state = copy.deepcopy(init)
+            self.states = [self.cur_state]
+
+            self.min_charge = [0 for _ in init]
+
+    def randevous(self):
+        paths = self.m.allShortestPaths()
+        best = None
+        best_dist = 10000000
+        for lid in range(len(self.m.locations)):
+            dist = 0
+            for l in self.states[0]:
+                dist += len(paths[lid][l]) - 1
+            if dist < best_dist:
+                best_dist = dist
+                best = lid
+
+        for i, l in enumerate(self.states[0]):
+            self.min_charge[i] = len(paths[l][best]) - 1
+
+        randevous_state = [best for _ in self.states[0]]
+        self.cur_state = randevous_state
+        self.states += [self.cur_state]
+        self.cost += best_dist
+        print('Randevous at', best, 'cost:', best_dist)
+
+    def reachArea(self, area):
+        sol = self.m.minCover(area, robot_locations = self.cur_state)
+        self.cost += sol['move-cost']
+        self.cur_state = copy.deepcopy(sol['robot-target'])
+        self.states += [self.cur_state]
+        self.areas += [area]
+
+    def computeRequiredCharge(self):
+        paths = self.m.allShortestPaths()
+        self.req_charge = [0 for _ in self.states[0]]
+        cur = self.states[0]
+        for s in self.states[1:]:
+            for robot in range(len(s)):
+                self.req_charge[robot] += len(paths[cur[robot]][s[robot]]) - 1
+            cur = s
+        assert(sum(self.req_charge) == self.cost)
+
+    def distributeInitCharge(self, mult):
+        while True:
+            charge = int(sum(self.req_charge) * mult)
+            self.init_charge = copy.deepcopy(self.min_charge)
+            remain = charge - sum(self.init_charge)
+            while remain > 0:
+                robot = random.randint(0, len(self.init_charge) - 1)
+                c = random.randint(0, remain)
+                self.init_charge[robot] += c
+                remain -= c
+            if any([self.init_charge[i] < self.req_charge[i] \
+                        for i in range(len(self.init_charge))]):
+                break
+
+    def toPddl(self, name):
+        p = PddlProblem(name, len(self.states[0]), sum(self.init_charge))
+        for e in self.m.connections:
+            p.addConnection(*e)
+        for i in range(len(self.states[0])):
+            p.setRobot(i, self.states[0][i], self.init_charge[i])
+
+        for area in self.areas:
+            p.addGuardConfig(area)
+
+        return p.create()
+
+    def toPlan(self):
+        num_robots = len(self.states[0])
+        paths = self.m.allShortestPaths()
+        cur_loc = copy.deepcopy(self.states[0])
+        cur_charge = copy.deepcopy(self.init_charge)
+        req_charge = copy.deepcopy(self.req_charge)
+
+        plan_cost = 0
+        plan = []
+        # first move to the randevous point
+        assert(len(set(self.states[1])) == 1)
+        for robot in range(num_robots):
+            path = paths[self.states[0][robot]][self.states[1][robot]]
+            for step in range(len(path) - 1):
+                a = '(move robot-{0:02d} location-{1:04d} location-{2:04d}'
+                a += ' battery-{3:04d} battery-{4:04d})'
+                a = a.format(robot, path[step], path[step + 1],
+                             cur_charge[robot], cur_charge[robot] - 1)
+                plan_cost += MOVE_COST
+                plan += [a]
+                cur_charge[robot] -= 1
+                req_charge[robot] -= 1
+        cur_loc = copy.deepcopy(self.states[1])
+
+        # Now recharge robots to .req_charge
+        for robot in range(num_robots):
+            while cur_charge[robot] < req_charge[robot]:
+                # find other robot with enough charge
+                fr = [x for x in range(num_robots) \
+                        if x != robot and cur_charge[x] > req_charge[x]]
+                fr = fr[0]
+                a = '(recharge robot-{0:02d} robot-{1:02d} location-{2:04d}'
+                a += ' battery-{3:04d} battery-{4:04d}'
+                a += ' battery-{5:04d} battery-{6:04d})'
+                assert(cur_loc[robot] == cur_loc[fr])
+                a = a.format(fr, robot, cur_loc[robot],
+                             cur_charge[fr], cur_charge[fr] - 1,
+                             cur_charge[robot], cur_charge[robot] + 1)
+                plan_cost += RECHARGE_COST
+                plan += [a]
+                cur_charge[fr] -= 1
+                cur_charge[robot] += 1
+
+        # Move robots to their target locations and guard
+        config_id = 0
+        for dst in range(2, len(self.states)):
+            for robot in range(num_robots):
+                path = paths[cur_loc[robot]][self.states[dst][robot]]
+                for step in range(len(path) - 1):
+                    a = '(move robot-{0:02d} location-{1:04d} location-{2:04d}'
+                    a += ' battery-{3:04d} battery-{4:04d})'
+                    a = a.format(robot, path[step], path[step + 1],
+                                 cur_charge[robot], cur_charge[robot] - 1)
+                    plan_cost += MOVE_COST
+                    plan += [a]
+                    cur_charge[robot] -= 1
+                a = '(stop-and-guard robot-{0:02d} location-{1:04d})'
+                a = a.format(robot, path[-1])
+                plan += [a]
+            cur_loc = copy.deepcopy(self.states[dst])
+            a = '(verify-guard-config config-{0:02d})'.format(config_id)
+            plan += [a]
+            config_id += 1
+
+        #for p in plan:
+        #    print(p)
+        s = f';; Cost: {plan_cost}\n'
+        s += f';; Length: {len(plan)}\n'
+        s += '\n'.join(plan)
+        return s
+
 def covers():
     desc = '''
 Generate a problem for re-charging guard robots:
@@ -850,6 +1017,8 @@ TODO
                         help = 'maximum edge width of an obstacle square')
     parser.add_argument('--random-seed', type = int, help = 'Random seed')
     parser.add_argument('num_robots', type = int, help = 'number of robots')
+    parser.add_argument('min_cover', type = int,
+                        help = 'minimum number of robots required to cover each area')
     parser.add_argument('num_areas', type = int,
                         help = 'number of areas that should be covered')
     parser.add_argument('num_obstacles', type = int,
@@ -860,7 +1029,9 @@ TODO
                         help = 'The minimum necessary amount of charge is'
                                ' multiplied by this number.')
     parser.add_argument('output_file', type = str,
-                        help = 'Path to output file.')
+                        help = 'Path to output pddl file.')
+    parser.add_argument('output_plan_file', type = str,
+                        help = 'Path to output plan file.')
 
     args = parser.parse_args()
     _common(args)
@@ -868,50 +1039,54 @@ TODO
     m = createRandomMap(args.num_obstacles, args.num_viewpoints)
 
     # Generate enough areas
-    areas = genAreas(m, args.num_areas, args.num_robots)
+    areas = genAreas(m, args.num_areas, args.min_cover)
+    print('areas:', areas)
 
-    # Generate start locations for robots
+    # Generate start locations outside the areas for robots
     start_locations = set(range(len(m.locations))) - set(sum(areas, start = []))
     start_locations = sorted(list(start_locations))
     random.shuffle(start_locations)
     start = start_locations[:args.num_robots]
-    print(start)
+    if len(start) != args.num_robots:
+        print('Error: Not enough locations outside the target areas')
+        sys.exit(-1)
+    m.draw('map.svg', blue = areas[0], red = areas[1], purple = start)
+    print('start:', start)
 
-    # Decide on the order we travel through the areas
-    areas, targets = sortAreasByDistance(m, areas, start)
+    # Go over all permutations of areas and select the solution with the
+    # minimal cost
+    best_p = Prob()
+    for ordered_areas in itertools.permutations(areas):
+        p = Prob(m, start)
+        p.randevous()
+        for a in ordered_areas:
+            p.reachArea(a)
 
-    # Now we need to go from start to targets[0], to targets[1], and so on
-    # Compute minimum charge we need to travel through the areas with all
-    # robots
-    dist = m.allShortestPaths()
-    required_charge = [0 for i in range(args.num_robots)]
-    for ri in range(args.num_robots):
-        required_charge[ri] = len(dist[start[ri]][targets[0][ri]]) - 1
-        for i in range(len(targets) - 1):
-            required_charge[ri] += len(dist[targets[i][ri]][targets[i+1][ri]]) - 1
-    min_charge = sum(required_charge)
+        if p.cost < best_p.cost:
+            best_p = p
+    best_p.computeRequiredCharge()
+    best_p.distributeInitCharge(args.charge_multiplier)
+    print('Cost:', best_p.cost)
+    print('States:', best_p.states)
+    print('Areas:', best_p.areas)
+    print('Minumum initial charge:', best_p.min_charge)
+    print('Required charge:', best_p.req_charge)
+    print('Init charge:', best_p.init_charge)
 
-    # Distribute charge among robots
-    charge_amount = int(math.ceil(min_charge * args.charge_multiplier))
-    charge = []
-    remain_charge = charge_amount
-    for t in range(args.num_robots):
-        c = random.choice(list(range(remain_charge + 1)))
-        charge += [c]
-        remain_charge -= c
-    charge[-1] += charge_amount - sum(charge)
-    assert(sum(charge) == charge_amount)
-    print(charge)
+    with open(args.output_file, 'w') as fout:
+        global CMD
+        global SEED
+        print(f';; Genearated with: {CMD}', file = fout)
+        print(f';; Random seed: {SEED}', file = fout)
+        rnd = random.randint(0,10000)
+        name = f'recharging-robots-cover-robots{args.num_robots}-areas{args.num_areas}-{SEED}-{rnd}'
+        pddl = best_p.toPddl(name)
+        print(pddl, file = fout)
 
-    # Now we need to add more charge to allow extra movement in order to
-    # re-charge robots
-    print(min_charge)
-    print(areas)
-    print(targets)
-    print(start)
-    print(charge)
-    print(required_charge)
-    sys.exit(0)
+    with open(args.output_plan_file, 'w') as fout:
+        fout.write(best_p.toPlan())
+
+    return 0
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
