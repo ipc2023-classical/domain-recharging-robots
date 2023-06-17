@@ -1050,7 +1050,7 @@ TODO
     if len(start) != args.num_robots:
         print('Error: Not enough locations outside the target areas')
         sys.exit(-1)
-    m.draw('map.svg', blue = areas[0], red = areas[1], purple = start)
+    #m.draw('map.svg', blue = areas[0], red = areas[1], purple = start)
     print('start:', start)
 
     # Go over all permutations of areas and select the solution with the
