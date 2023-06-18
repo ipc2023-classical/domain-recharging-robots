@@ -21,7 +21,7 @@ MIN_VIEWPOINT_OBSTACLE_DISTANCE = 0.05
 MIN_OBSTACLE_OBSTACLE_DISTANCE = 0.05
 
 MOVE_COST = 1
-RECHARGE_COST = 0
+RECHARGE_COST = 1
 
 class SquareObstacle(object):
     def __init__(self, pos, w):
@@ -565,6 +565,8 @@ Generate a problem for re-charging guard robots:
                                ' multiplied by this number.')
     parser.add_argument('output_file', type = str,
                         help = 'Path to output file.')
+    parser.add_argument('plan_file', type = str,
+                        help = 'Path to the output plan file.')
 
     args = parser.parse_args()
     _common(args)
@@ -627,6 +629,7 @@ Generate a problem for re-charging guard robots:
         print(';; Random seed: {0}'.format(SEED), file = fout)
         print(pddl.create(), file = fout)
 
+    with open(args.plan_file, 'w') as fout:
         plan = []
         for ri in range(args.num_robots):
             cur_charge = charge[ri]
@@ -643,11 +646,10 @@ Generate a problem for re-charging guard robots:
             charge[ri] = cur_charge
 
         plan += planSingleSourceToLocations(m, charge, source, targets)
-        print('', file = fout)
         print(';; Cost: {0}'.format(len(plan)), file = fout)
         print(';; Plan:', file = fout)
         for p in plan:
-            print(';;', p, file = fout)
+            print(p, file = fout)
 
 
 def singleSourceCover():
@@ -749,7 +751,7 @@ Generate a problem for re-charging guard robots:
             charge[ri] += add_charge
             charge_amount += add_charge
 
-    m.draw('p.svg', blue = dest, red = [dest_center,source], purple = sources)
+    #m.draw('p.svg', blue = dest, red = [dest_center,source], purple = sources)
 
     # Create PDDL problem
     problem_name = 'recharge-single-source-cover-{0}' \
